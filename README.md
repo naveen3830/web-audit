@@ -48,4 +48,7 @@ Place your CSV data file in the Data/ directory.
 Update the DATA_FILE_PATH constant in app1.py if your file is named differently or located elsewhere.
 
 Run the Streamlit app:
+  ```bash
+streamlit run app1.py
+
 
