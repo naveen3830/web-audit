@@ -1,0 +1,17 @@
+[project]
+name = "web-audit"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "fastapi>=0.115.12",
+    "matplotlib>=3.10.3",
+    "numpy>=2.2.5",
+    "opencv-python>=4.11.0.86",
+    "pandas>=2.2.3",
+    "pyautogui>=0.9.54",
+    "requests>=2.32.3",
+    "streamlit>=1.45.0",
+]

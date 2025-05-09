@@ -1,1 +1,7 @@
 .qodo
+.venv
+/venv
+main.py
+__pycache__/
+sf_automation.log
+sf_after_crawl.log
