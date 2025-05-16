@@ -49,7 +49,6 @@ def identify_duplicate_content(df):
     
     return duplicate_titles
 
-
 def get_urls_from_csv(file_path):
     urls = []
     try:
@@ -129,11 +128,9 @@ def seo_health_check_tab():
             df = pd.read_csv(DATA_FILE_PATH)
             st.success(f"Successfully loaded data with {len(df)} rows and {len(df.columns)} columns")
             
-            # Display first few rows to confirm data loaded correctly
             with st.expander("Preview Data"):
                 st.dataframe(df.head())
             
-            # Analyze data for SEO metrics
             report = analyze_seo_data(df)
             
             st.subheader("SEO Health Check Report")
@@ -172,7 +169,6 @@ def seo_health_check_tab():
                 )
                 col3.metric("Missing H1 Tags", report["missing_h1"], delta_color="inverse")
 
-            # Duplicate content analysis
             duplicate_content = identify_duplicate_content(df)
             
             with st.expander("Duplicate Title Analysis", expanded=True):
@@ -204,7 +200,6 @@ def seo_health_check_tab():
             
     except Exception as e:
         st.error(f"An unexpected error occurred: {str(e)}")
-
 
 def header_analysis_tab():
     st.header("Header Analysis")
@@ -361,7 +356,6 @@ def main():
     
     with tab2:
         header_analysis_tab()
-    
 
 if __name__ == "__main__":
     main()
