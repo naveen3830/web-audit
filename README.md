@@ -40,7 +40,7 @@ A Python-based tool built with Streamlit for analyzing website SEO health and he
    ```bash
    uv sync
 
-All dependencies are managed via uv—just run uv sync after cloning and activating your virtual environment.
+All dependencies are managed via uv just run uv sync after cloning and activating your virtual environment.
 
 ## Usage
 Place your CSV data file in the Data/ directory.
@@ -48,4 +48,7 @@ Place your CSV data file in the Data/ directory.
 Update the DATA_FILE_PATH constant in app1.py if your file is named differently or located elsewhere.
 
 Run the Streamlit app:
+  ```bash
+streamlit run app1.py
+
 
