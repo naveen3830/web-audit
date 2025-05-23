@@ -7,178 +7,426 @@ ALT_TAG_DATA_PATH = r"Data\images_missing_alt_text_efax.csv"
 ORPHAN_PAGES_DATA_PATH = r"Data\efax_orphan_urls.csv"
 
 def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
+    expected_outcomes = {
+        "Website performance on desktop": "Score > 90",
+        "Website performance on mobile": "Score > 80",
+        "Core Web Vitals on desktop": "Pass",
+        "Core Web Vitals on mobile": "Pass",
+        "Accessibility Score": "Score > 90",
+        "SEO Score": "Score > 90",
+        "Mobile friendliness": "Pass",
+        "Indexed pages": "All active pages are indexed",
+        "Non indexed pages": "No active pages are in no index state.\nMinimal or no indexed pages",
+        "Robots.txt file optimization": "Optimized",
+        "Sitemap file optimization": "All active website URLs are part of sitemap",
+        "Broken internal links (404)": "0 broken links",
+        "Broken external links": "0 broken links",
+        "Broken backlinks": "0 broken backlinks",
+        "Broken Images": "0 broken Images",
+        "Orphan page": "No orphan page",
+        "Canonical Errors": "No page with canonical error",
+        "Information architecture": "Site structure & navigation is well defined & easy to understand",
+        "Header tags structure": "Content structure is well-defined and easy to understand",
+        "Backlinks": "No of backlinks",
+        "Domain authority": "DA >70",
+        "Spam Score": "Score <5",
+        "Duplicate content": "Minimal or no pages with issues",
+        "Img alt tag": "Minimal or no pages with issues",
+        "Duplicate & missing H1": "Minimal or no pages with issues",
+        "Duplicate & missing meta title": "Minimal or no pages with issues",
+        "Duplicate & missing description": "Minimal or no pages with issues",
+        "Schema Markup": "Schema implementation opportunities",
+    }
+
+    sources = {
+        "Website performance on desktop": "Pagespeedinsights",
+        "Website performance on mobile": "Pagespeedinsights",
+        "Core Web Vitals on desktop": "Pagespeedinsights",
+        "Core Web Vitals on mobile": "Pagespeedinsights",
+        "Accessibility Score": "Pagespeedinsights",
+        "SEO Score": "Pagespeedinsights",
+        "Mobile friendliness": "Manual",
+        "Indexed pages": "Google search console",
+        "Non indexed pages": "Google search console",
+        "Robots.txt file optimization": "Manual",
+        "Sitemap file optimization": "Manual",
+        "Broken internal links (404)": "Ahrefs",
+        "Broken external links": "Ahrefs",
+        "Broken backlinks": "Ahrefs",
+        "Broken Images": "Manual",
+        "Orphan page": "Screamfrog",
+        "Canonical Errors": "Screamfrog",
+        "Information architecture": "Ahrefs",
+        "Header tags structure": "Manual",
+        "Backlinks": "Ahrefs",
+        "Domain authority": "Moz",
+        "Spam Score": "Moz",
+        "Duplicate content": "Screamfrog",
+        "Img alt tag": "Screamfrog",
+        "Duplicate & missing H1": "Screamfrog",
+        "Duplicate & missing meta title": "Screamfrog",
+        "Duplicate & missing description": "Screamfrog",
+        "Schema Markup":"Manual or AIO Tool"
+    }
+
     report = {
         "Category": [],
         "Parameters": [],
         "Current Value": [],
-        "Target": [],
-        "Status": []
+        "Expected Value": [],
+        "Source": [],
+        "Status": [],
     }
-    
-    broken_internal_links = len(df[df["Status Code"] == 404])
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Broken internal links (404)")
-    report["Current Value"].append(broken_internal_links)
-    report["Target"].append("0")
-    report["Status"].append("❌ Fail" if broken_internal_links > 0 else "✅ Pass")
-    
-    orphan_pages_count = 0
-    if orphan_pages_df is not None and not orphan_pages_df.empty:
-        orphan_pages_count = len(orphan_pages_df)
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Orphan pages")
-    report["Current Value"].append(orphan_pages_count)
-    report["Target"].append("0")
-    report["Status"].append("❌ Fail" if orphan_pages_count > 0 else "✅ Pass")
-    
-    canonical_errors = len(df[df["Canonical Link Element 1"] != df["Address"]])
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Canonical Errors")
-    report["Current Value"].append(canonical_errors)
-    report["Target"].append("0")
-    report["Status"].append("❌ Fail" if canonical_errors > 0 else "✅ Pass")
-    
+
+    # Performance & Core Web Vitals (These are not available from Screaming Frog)
+    performance_metrics = [
+        "Website performance on desktop",
+        "Website performance on mobile",
+        "Core Web Vitals on desktop",
+        "Core Web Vitals on mobile",
+        "Accessibility Score",
+        "SEO Score",
+        "Mobile friendliness",
+    ]
+
+    for metric in performance_metrics:
+        report["Category"].append("Performance & Core Web Vitals")
+        report["Parameters"].append(metric)
+        report["Current Value"].append("N/A")
+        report["Expected Value"].append(expected_outcomes[metric])
+        report["Source"].append(sources[metric])
+        report["Status"].append("ℹ️ Not Available")
+
+    # Crawling & Indexing
     if "Indexability" in df.columns and "Indexability Status" in df.columns:
         indexed_pages = len(df[df["Indexability"] == "Indexable"])
         report["Category"].append("Crawling & Indexing")
         report["Parameters"].append("Indexed pages")
         report["Current Value"].append(indexed_pages)
-        report["Target"].append("All active")
+        report["Expected Value"].append(expected_outcomes["Indexed pages"])
+        report["Source"].append(sources["Indexed pages"])
         report["Status"].append("ℹ️ Review")
-        
-        non_indexed_pages = len(df[df["Indexability Status"].str.contains("noindex", na=False)])
+
+        non_indexed_pages = len(
+            df[df["Indexability Status"].str.contains("noindex", na=False)]
+        )
         report["Category"].append("Crawling & Indexing")
         report["Parameters"].append("Non indexed pages")
         report["Current Value"].append(non_indexed_pages)
-        report["Target"].append("0")
+        report["Expected Value"].append(expected_outcomes["Non indexed pages"])
+        report["Source"].append(sources["Non indexed pages"])
         report["Status"].append("ℹ️ Review" if non_indexed_pages > 0 else "✅ Pass")
-    
-    df_with_titles = df[df["Title 1"].notna() & (df["Title 1"] != "")]
-    duplicate_titles = len(df_with_titles[df_with_titles["Title 1"].duplicated(keep=False)])
-    report["Category"].append("Metadata & Schema")
-    report["Parameters"].append("Duplicate titles")
-    report["Current Value"].append(duplicate_titles)
-    report["Target"].append("0")
-    report["Status"].append("❌ Fail" if duplicate_titles > 0 else "✅ Pass")
-    
+    else:
+        report["Category"].append("Crawling & Indexing")
+        report["Parameters"].append("Indexed pages")
+        report["Current Value"].append("N/A")
+        report["Expected Value"].append(expected_outcomes["Indexed pages"])
+        report["Source"].append(sources["Indexed pages"])
+        report["Status"].append("ℹ️ Not Available")
+
+        report["Category"].append("Crawling & Indexing")
+        report["Parameters"].append("Non indexed pages")
+        report["Current Value"].append("N/A")
+        report["Expected Value"].append(expected_outcomes["Non indexed pages"])
+        report["Source"].append(sources["Non indexed pages"])
+        report["Status"].append("ℹ️ Not Available")
+
+    # Add Robots.txt and Sitemap (not available from Screaming Frog)
+    report["Category"].append("Crawling & Indexing")
+    report["Parameters"].append("Robots.txt file optimization")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Robots.txt file optimization"])
+    report["Source"].append(sources["Robots.txt file optimization"])
+    report["Status"].append("ℹ️ Not Available")
+
+    report["Category"].append("Crawling & Indexing")
+    report["Parameters"].append("Sitemap file optimization")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Sitemap file optimization"])
+    report["Source"].append(sources["Sitemap file optimization"])
+    report["Status"].append("ℹ️ Not Available")
+
+    # Site Health & Structure
+    broken_internal_links = len(df[df["Status Code"] == 404])
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Broken internal links (404)")
+    report["Current Value"].append(broken_internal_links)
+    report["Expected Value"].append(expected_outcomes["Broken internal links (404)"])
+    report["Source"].append(sources["Broken internal links (404)"])
+    report["Status"].append("❌ Fail" if broken_internal_links > 0 else "✅ Pass")
+
+    # External links and backlinks (not available from Screaming Frog)
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Broken external links")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Broken external links"])
+    report["Source"].append(sources["Broken external links"])
+    report["Status"].append("ℹ️ Not Available")
+
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Broken backlinks")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Broken backlinks"])
+    report["Source"].append(sources["Broken backlinks"])
+    report["Status"].append("ℹ️ Not Available")
+
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Broken Images")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Broken Images"])
+    report["Source"].append(sources["Broken Images"])
+    report["Status"].append("ℹ️ Not Available")
+
+    # Orphan pages
+    orphan_pages_count = 0
+    if orphan_pages_df is not None and not orphan_pages_df.empty:
+        orphan_pages_count = len(orphan_pages_df)
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Orphan page")
+    report["Current Value"].append(orphan_pages_count)
+    report["Expected Value"].append(expected_outcomes["Orphan page"])
+    report["Source"].append(sources["Orphan page"])
+    report["Status"].append("❌ Fail" if orphan_pages_count > 0 else "✅ Pass")
+
+    # Canonical Errors
+    canonical_errors = len(df[df["Canonical Link Element 1"] != df["Address"]])
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Canonical Errors")
+    report["Current Value"].append(canonical_errors)
+    report["Expected Value"].append(expected_outcomes["Canonical Errors"])
+    report["Source"].append(sources["Canonical Errors"])
+    report["Status"].append("❌ Fail" if canonical_errors > 0 else "✅ Pass")
+
+    # Information architecture and header tags structure (not available from Screaming Frog)
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Information architecture")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Information architecture"])
+    report["Source"].append(sources["Information architecture"])
+    report["Status"].append("ℹ️ Not Available")
+
+    report["Category"].append("Site Health & Structure")
+    report["Parameters"].append("Header tags structure")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Header tags structure"])
+    report["Source"].append(sources["Header tags structure"])
+    report["Status"].append("ℹ️ Not Available")
+
+    # Link Profile & Authority (not available from Screaming Frog)
+    link_profile_metrics = ["Backlinks", "Domain authority", "Spam Score"]
+    for metric in link_profile_metrics:
+        report["Category"].append("Link Profile & Authority")
+        report["Parameters"].append(metric)
+        report["Current Value"].append("N/A")
+        report["Expected Value"].append(expected_outcomes[metric])
+        report["Source"].append(sources[metric])
+        report["Status"].append("ℹ️ Not Available")
+
+    # Metadata & Schema
+    # Duplicate content
     duplicate_content = 0
     if "Word Count" in df.columns and "Sentence Count" in df.columns:
         df_content = df[df["Word Count"].notna() & df["Sentence Count"].notna()]
-        duplicate_content = len(df_content[df_content.duplicated(subset=["Word Count", "Sentence Count"], keep=False)])
-        report["Category"].append("Metadata & Schema")
-        report["Parameters"].append("Duplicate content")
-        report["Current Value"].append(duplicate_content)
-        report["Target"].append("0")
-        report["Status"].append("❌ Fail" if duplicate_content > 0 else "✅ Pass")
-    
-    missing_h1 = df["H1-1"].isna().sum()
+        duplicate_content = len(
+            df_content[
+                df_content.duplicated(
+                    subset=["Word Count", "Sentence Count"], keep=False
+                )
+            ]
+        )
     report["Category"].append("Metadata & Schema")
-    report["Parameters"].append("Missing H1")
-    report["Current Value"].append(missing_h1)
-    report["Target"].append("0")
-    report["Status"].append("❌ Fail" if missing_h1 > 0 else "✅ Pass")
-    
-    missing_title = df["Title 1"].isna().sum()
-    report["Category"].append("Metadata & Schema")
-    report["Parameters"].append("Missing meta title")
-    report["Current Value"].append(missing_title)
-    report["Target"].append("0")
-    report["Status"].append("❌ Fail" if missing_title > 0 else "✅ Pass")
-    
-    missing_description = df["Meta Description 1"].isna().sum()
-    report["Category"].append("Metadata & Schema")
-    report["Parameters"].append("Missing meta description")
-    report["Current Value"].append(missing_description)
-    report["Target"].append("0")
-    report["Status"].append("❌ Fail" if missing_description > 0 else "✅ Pass")
-    
-    if "Images Missing Alt Text" in df.columns:
-        missing_alt = df["Images Missing Alt Text"].sum()
-        report["Category"].append("Metadata & Schema")
-        report["Parameters"].append("Missing image alt tags")
-        report["Current Value"].append(missing_alt)
-        report["Target"].append("0")
-        report["Status"].append("❌ Fail" if missing_alt > 0 else "✅ Pass")
-    
+    report["Parameters"].append("Duplicate content")
+    report["Current Value"].append(duplicate_content)
+    report["Expected Value"].append(expected_outcomes["Duplicate content"])
+    report["Source"].append(sources["Duplicate content"])
+    report["Status"].append("❌ Fail" if duplicate_content > 0 else "✅ Pass")
+
+    # Img alt tag
     images_missing_alt_text = 0
     if alt_tag_df is not None and not alt_tag_df.empty:
         images_missing_alt_text = len(alt_tag_df)
-    else:
-        images_missing_alt_text = 9  
-        
     report["Category"].append("Metadata & Schema")
-    report["Parameters"].append("Images missing alt text")
+    report["Parameters"].append("Img alt tag")
     report["Current Value"].append(images_missing_alt_text)
-    report["Target"].append("0")
+    report["Expected Value"].append(expected_outcomes["Img alt tag"])
+    report["Source"].append(sources["Img alt tag"])
     report["Status"].append("❌ Fail" if images_missing_alt_text > 0 else "✅ Pass")
-    
+
+    # H1 issues
+    missing_h1 = df["H1-1"].isna().sum()
+    duplicate_h1 = len(df[df["H1-1"].duplicated(keep=False)])
+    report["Category"].append("Metadata & Schema")
+    report["Parameters"].append("Duplicate & missing H1")
+    report["Current Value"].append(f"Missing: {missing_h1}, Duplicate: {duplicate_h1}")
+    report["Expected Value"].append(expected_outcomes["Duplicate & missing H1"])
+    report["Source"].append(sources["Duplicate & missing H1"])
+    report["Status"].append(
+        "❌ Fail" if missing_h1 > 0 or duplicate_h1 > 0 else "✅ Pass"
+    )
+
+    # Meta title issues
+    missing_title = df["Title 1"].isna().sum()
+    duplicate_titles = 0
+    df_with_titles = df[df["Title 1"].notna() & (df["Title 1"] != "")]
+    duplicate_titles = len(
+        df_with_titles[df_with_titles["Title 1"].duplicated(keep=False)]
+    )
+    report["Category"].append("Metadata & Schema")
+    report["Parameters"].append("Duplicate & missing meta title")
+    report["Current Value"].append(
+        f"Missing: {missing_title}, Duplicate: {duplicate_titles}"
+    )
+    report["Expected Value"].append(expected_outcomes["Duplicate & missing meta title"])
+    report["Source"].append(sources["Duplicate & missing meta title"])
+    report["Status"].append(
+        "❌ Fail" if missing_title > 0 or duplicate_titles > 0 else "✅ Pass"
+    )
+
+    # Meta description issues
+    missing_description = df["Meta Description 1"].isna().sum()
+    duplicate_descriptions = len(df[df["Meta Description 1"].duplicated(keep=False)])
+    report["Category"].append("Metadata & Schema")
+    report["Parameters"].append("Duplicate & missing description")
+    report["Current Value"].append(
+        f"Missing: {missing_description}, Duplicate: {duplicate_descriptions}"
+    )
+    report["Expected Value"].append(
+        expected_outcomes["Duplicate & missing description"]
+    )
+    report["Source"].append(sources["Duplicate & missing description"])
+    report["Status"].append(
+        "❌ Fail"
+        if missing_description > 0 or duplicate_descriptions > 0
+        else "✅ Pass"
+    )
+
+    # Schema Markup (not available from Screaming Frog)
+    report["Category"].append("Metadata & Schema")
+    report["Parameters"].append("Schema Markup")
+    report["Current Value"].append("N/A")
+    report["Expected Value"].append(expected_outcomes["Schema Markup"])
+    report["Source"].append(sources["Schema Markup"])
+    report["Status"].append("ℹ️ Not Available")
+
+    # Prepare detail data for deeper analysis
     duplicate_data = None
     if duplicate_titles > 0:
-        duplicate_data = df_with_titles[df_with_titles["Title 1"].duplicated(keep=False)][["Address", "Title 1", "Title 1 Length"]]
-    
-    duplicate_content_data = None
-    if duplicate_content > 0 and "Word Count" in df.columns and "Sentence Count" in df.columns:
-        duplicate_content_data = df[df.duplicated(subset=["Word Count", "Sentence Count"], keep=False)][["Address", "Word Count", "Sentence Count"]]
+        duplicate_data = df_with_titles[
+            df_with_titles["Title 1"].duplicated(keep=False)
+        ][["Address", "Title 1", "Title 1 Length"]]
 
-    return pd.DataFrame(report), duplicate_data, duplicate_content_data
+    duplicate_content_data = None
+    if (
+        duplicate_content > 0
+        and "Word Count" in df.columns
+        and "Sentence Count" in df.columns
+    ):
+        duplicate_content_data = df[
+            df.duplicated(subset=["Word Count", "Sentence Count"], keep=False)
+        ][["Address", "Word Count", "Sentence Count"]]
+
+    h1_issues_data = None
+    if missing_h1 > 0 or duplicate_h1 > 0:
+        h1_issues_data = df[df["H1-1"].isna() | df["H1-1"].duplicated(keep=False)][
+            ["Address", "H1-1"]
+        ]
+
+    description_issues_data = None
+    if missing_description > 0 or duplicate_descriptions > 0:
+        description_issues_data = df[
+            df["Meta Description 1"].isna()
+            | df["Meta Description 1"].duplicated(keep=False)
+        ][["Address", "Meta Description 1"]]
+
+
+    final_report_df = pd.DataFrame(report)
+    if not final_report_df.empty:
+        final_report_df = final_report_df.set_index(["Category", "Parameters"])
+
+    return final_report_df, {
+        "duplicate_titles": duplicate_data,
+        "duplicate_content": duplicate_content_data,
+        "h1_issues": h1_issues_data,
+        "description_issues": description_issues_data,
+    }
 
 def main():
     st.set_page_config(page_title="Web Audit Data Analyzer", layout="wide")
-    
+
     st.title("Web Audit Data Analyzer")
-    st.markdown("A tabular analysis of your website's SEO health based on Screaming Frog data")
+    st.markdown(
+        "A comprehensive analysis of your website's SEO health based on Screaming Frog data"
+    )
     st.divider()
-    
+
     try:
-        file_option = st.radio("Select data source", ["Use default file path", "Upload files"])
-        
+        file_option = st.radio(
+            "Select data source", ["Use default file path", "Upload files"]
+        )
+
         df = None
         alt_tag_df = None
         orphan_pages_df = None
-        
+
         if file_option == "Upload files":
             st.info("You must upload all three files to proceed with the analysis")
-            
+
             col1, col2, col3 = st.columns(3)
-            
+
             with col1:
                 st.markdown("### Main Screaming Frog Data")
-                main_file = st.file_uploader("Upload Screaming Frog CSV export", type="csv", key="main_file")
+                main_file = st.file_uploader(
+                    "Upload Screaming Frog CSV export", type="csv", key="main_file"
+                )
                 if main_file:
                     df = pd.read_csv(main_file)
                     st.success(f"✅ Main file uploaded with {len(df)} rows")
                 else:
                     st.warning("Main file required")
-            
+
             with col2:
                 st.markdown("### Alt Tag Data")
-                alt_tag_file = st.file_uploader("Upload Images Missing Alt Tags CSV", type="csv", key="alt_tag_file")
+                alt_tag_file = st.file_uploader(
+                    "Upload Images Missing Alt Tags CSV", type="csv", key="alt_tag_file"
+                )
                 if alt_tag_file:
                     alt_tag_df = pd.read_csv(alt_tag_file)
                     st.success(f"✅ Alt tag file uploaded with {len(alt_tag_df)} rows")
                 else:
                     st.warning("Alt tag file required")
-            
+
             with col3:
                 st.markdown("### Orphan Pages Data")
-                orphan_file = st.file_uploader("Upload Orphan Pages CSV", type="csv", key="orphan_file")
+                orphan_file = st.file_uploader(
+                    "Upload Orphan Pages CSV", type="csv", key="orphan_file"
+                )
                 if orphan_file:
                     orphan_pages_df = pd.read_csv(orphan_file)
-                    st.success(f"✅ Orphan pages file uploaded with {len(orphan_pages_df)} rows")
+                    st.success(
+                        f"✅ Orphan pages file uploaded with {len(orphan_pages_df)} rows"
+                    )
                 else:
                     st.warning("Orphan pages file required")
-            
-            all_files_uploaded = main_file is not None and alt_tag_file is not None and orphan_file is not None
-            
+
+            all_files_uploaded = (
+                main_file is not None
+                and alt_tag_file is not None
+                and orphan_file is not None
+            )
+
             if not all_files_uploaded:
                 st.warning("Please upload all three required files to continue")
                 return
-                
+
             file_source = "uploaded files"
-            
+
         else:
             # Using default file paths
-            if os.path.exists(DATA_FILE_PATH) and os.path.exists(ALT_TAG_DATA_PATH) and os.path.exists(ORPHAN_PAGES_DATA_PATH):
+            if (
+                os.path.exists(DATA_FILE_PATH)
+                and os.path.exists(ALT_TAG_DATA_PATH)
+                and os.path.exists(ORPHAN_PAGES_DATA_PATH)
+            ):
                 df = pd.read_csv(DATA_FILE_PATH)
                 alt_tag_df = pd.read_csv(ALT_TAG_DATA_PATH)
                 orphan_pages_df = pd.read_csv(ORPHAN_PAGES_DATA_PATH)
@@ -190,104 +438,130 @@ def main():
                 if not os.path.exists(ALT_TAG_DATA_PATH):
                     missing_files.append(f"Alt tag data file: {ALT_TAG_DATA_PATH}")
                 if not os.path.exists(ORPHAN_PAGES_DATA_PATH):
-                    missing_files.append(f"Orphan pages data file: {ORPHAN_PAGES_DATA_PATH}")
-                
-                st.error(f"The following files were not found at the default paths:")
+                    missing_files.append(
+                        f"Orphan pages data file: {ORPHAN_PAGES_DATA_PATH}"
+                    )
+
+                st.error("The following files were not found at the default paths:")
                 for file in missing_files:
                     st.error(f"- {file}")
                 st.error("Please use the 'Upload files' option instead.")
                 return
-        
-        # Now we know we have all 3 files loaded
+
         st.divider()
-        
-        # Show domain information
+
         if df is not None and len(df) > 0:
-            domain = df["Address"].iloc[0].split('/')[2] if '://' in df["Address"].iloc[0] else df["Address"].iloc[0]
-            st.success(f'Website audit for the domain: {domain}')
-            
+            domain = (
+                df["Address"].iloc[0].split("/")[2]
+                if "://" in df["Address"].iloc[0]
+                else df["Address"].iloc[0]
+            )
+            st.success(f"Website audit for the domain: {domain}")
+
             # Process the data button
             if st.button("Process Data and Generate Report", type="primary"):
-                with st.spinner('Analyzing data and generating report...'):
+                with st.spinner("Analyzing data and generating report..."):
                     st.divider()
-                    report_df, duplicate_data, duplicate_content_data = analyze_screaming_frog_data(df, alt_tag_df, orphan_pages_df)
-
-                    st.subheader("SEO Audit Results")
-                    
-                    def highlight_status(val):
-                        if val == "✅ Pass":
-                            return 'background-color: #CCFFCC'
-                        elif val == "❌ Fail":
-                            return 'background-color: #FFCCCC'
-                        else:
-                            return 'background-color: #FFFFCC'
-                    
-                    for category in report_df['Category'].unique():
-                        st.subheader(category)
-                        category_df = report_df[report_df['Category'] == category]
-                        styled_df = category_df.drop('Category', axis=1).style.map(
-                            lambda x: highlight_status(x) if x in ["✅ Pass", "❌ Fail", "ℹ️ Review"] else '', 
-                            subset=['Status']
-                        )
-                        st.table(styled_df)
-                    
-                    if duplicate_data is not None and not duplicate_data.empty:
-                        st.subheader("Detailed Analysis: Duplicate Titles")
-                        st.dataframe(duplicate_data.sort_values("Title 1"))
-                    
-                    if duplicate_content_data is not None and not duplicate_content_data.empty:
-                        st.subheader("Detailed Analysis: Duplicate Content")
-                        st.dataframe(duplicate_content_data.sort_values(["Word Count", "Sentence Count"]))
-                    
-                    # Add detailed views for the new datasets
-                    if alt_tag_df is not None and not alt_tag_df.empty:
-                        st.subheader("Detailed Analysis: Images Missing Alt Text")
-                        st.dataframe(alt_tag_df)
-                    
-                    if orphan_pages_df is not None and not orphan_pages_df.empty:
-                        st.subheader("Detailed Analysis: Orphan Pages")
-                        st.dataframe(orphan_pages_df)
-                    
-                    # Create a copy of the report dataframe for CSV export with text-only status
-                    export_df = report_df.copy()
-                    # Replace symbols with text for CSV export
-                    export_df['Status'] = export_df['Status'].replace({
-                        "✅ Pass": "Pass",
-                        "❌ Fail": "Fail",
-                        "ℹ️ Review": "Review"
-                    })
-                    
-                    csv = export_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Full Report as CSV",
-                        data=csv.encode('utf-8'),
-                        file_name="screaming_frog_seo_audit.csv",
-                        mime="text/csv",
+                    report_df, detailed_data = analyze_screaming_frog_data(
+                        df, alt_tag_df, orphan_pages_df
                     )
-            
-            # Add option to preview raw data
+
+                    st.subheader("SEO Audit Results") # Single subheader for the entire report
+
+                    def highlight_status(val):
+                        # BRAG colour‐mapping
+                        if val == "✅ Pass":
+                            return "background-color: #28a745; color: white;"    # Green
+                        elif val == "❌ Fail":
+                            return "background-color: #dc3545; color: white;"    # Red
+                        elif val == "ℹ️ Review":
+                            return "background-color: #ffc107; color: black;"    # Amber
+                        elif val == "ℹ️ Not Available":
+                            return "background-color: #D3D3D3; color: black;"    # Blue
+                        else:
+                            return ""
+
+                    if not report_df.empty:
+                        styled_df = report_df.style.applymap(
+                            highlight_status,
+                            subset=["Status"]
+                        )
+                        st.dataframe(styled_df, use_container_width=True)
+                    else:
+                        st.info("No report data to display.")
+                    
+                    st.divider()
+                    st.subheader("Detailed Issues for Further Analysis")
+
+                    detailed_tabs = [
+                        key
+                        for key, value in detailed_data.items()
+                        if value is not None and not value.empty
+                    ]
+
+                    if detailed_tabs:
+                        tabs = st.tabs(
+                            [name.replace("_", " ").title() for name in detailed_tabs]
+                        )
+
+                        for i, tab_name in enumerate(detailed_tabs):
+                            with tabs[i]:
+                                st.dataframe(detailed_data[tab_name])
+                    else:
+                        st.info("No detailed issues found for further analysis.")
+
+                    if alt_tag_df is not None and not alt_tag_df.empty:
+                        st.subheader("Images Missing Alt Text")
+                        st.dataframe(alt_tag_df)
+
+                    if orphan_pages_df is not None and not orphan_pages_df.empty:
+                        st.subheader("Orphan Pages")
+                        st.dataframe(orphan_pages_df)
+                        
+                    if not report_df.empty:
+                        export_df = report_df.reset_index()
+                        export_df["Status"] = export_df["Status"].replace(
+                            {
+                                "✅ Pass": "Pass",
+                                "❌ Fail": "Fail",
+                                "ℹ️ Review": "Review",
+                                "ℹ️ Not Available": "Not Available",
+                            }
+                        )
+
+                        csv = export_df.to_csv(index=False)
+                        st.download_button(
+                            label="Download Full Report as CSV",
+                            data=csv.encode("utf-8"),
+                            file_name="seo_audit_report.csv",
+                            mime="text/csv",
+                        )
+                    else:
+                        st.info("No report data to export.")
+
             with st.expander("Preview Raw Data", expanded=False):
                 tabs = st.tabs(["Main Data", "Alt Tag Data", "Orphan Pages Data"])
-                
+
                 with tabs[0]:
                     st.dataframe(df)
-                
+
                 with tabs[1]:
                     if alt_tag_df is not None:
                         st.dataframe(alt_tag_df)
                     else:
                         st.warning("Alt tag data not loaded")
-                
+
                 with tabs[2]:
                     if orphan_pages_df is not None:
                         st.dataframe(orphan_pages_df)
                     else:
                         st.warning("Orphan pages data not loaded")
-        
+
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
-        st.error("If you're seeing this error, please make sure your files are in the correct format and try again.")
-
+        st.error(
+            "If you're seeing this error, please make sure your files are in the correct format and try again."
+        )
 
 if __name__ == "__main__":
     main()
