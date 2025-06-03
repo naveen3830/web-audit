@@ -1,11 +1,220 @@
 import streamlit as st
 import pandas as pd
 import os
+import requests
+import json
+import extruct
+from w3lib.html import get_base_url
+from urllib.parse import urljoin, urlparse
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 DATA_FILE_PATH = r"Data\efax_internal_html.csv"
 ALT_TAG_DATA_PATH = r"Data\images_missing_alt_text_efax.csv"
 ORPHAN_PAGES_DATA_PATH = r"Data\efax_orphan_urls.csv"
 
+SCHEMA_CHECKLIST = [
+    ("Breadcrumbs", "BreadcrumbList"),
+    ("FAQ", "FAQPage"),
+    ("Article", "Article"),
+    ("Video", "VideoObject"),
+    ("Organization", "Organization"),
+    ("How-to", "HowTo"),
+    ("WebPage", "WebPage"),
+    ("Product", "Product"),
+    ("Review", "Review"),
+    ("Person", "Person"),
+    ("Event", "Event"),
+    ("Recipe", "Recipe"),
+    ("LocalBusiness", "LocalBusiness"),
+    ("CreativeWork", "CreativeWork"),
+    ("ItemList", "ItemList"),
+    ("JobPosting", "JobPosting"),
+    ("Course", "Course"),
+    ("ImageObject", "ImageObject"),
+    ("Service", "Service"),
+]
+
+URL_VARIATIONS = [
+    "",
+    "/about",
+    "/about-us",
+    "/products",
+    "/services",
+    "/solutions",
+    "/blog",
+    "/blogs",
+    "/cyberglossary",
+    "/news",
+    "/resources",
+    "/how-to",
+    "/tutorials",
+    "/guides",
+    "/faq",
+    "/help",
+    "/support",
+    "/contact",
+    "/contact-us",
+    "/reviews",
+    "/testimonials",
+    "/portfolio",
+    "/cases",
+    "/case-studies",
+    "/team",
+    "/careers",
+    "/jobs",
+    "/catalog",
+    "/pricing",
+    "/plans",
+    "/login",
+    "/signup",
+    "/register",
+]
+
+def extract_schemas(url, timeout=10):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.4472.124 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        base_url = get_base_url(response.text, response.url)
+
+        data = extruct.extract(
+            response.text, base_url=base_url, syntaxes=["json-ld", "microdata", "rdfa"]
+        )
+        return data
+    except requests.exceptions.RequestException:
+        return None
+
+def flatten_schema(schema_item):
+    """Flatten nested schema items, including @graph structures."""
+    if isinstance(schema_item, list):
+        for item in schema_item:
+            yield from flatten_schema(item)
+    elif isinstance(schema_item, dict):
+        if "@graph" in schema_item:
+            yield from flatten_schema(schema_item["@graph"])
+        yield schema_item
+
+def extract_schema_names(schemas):
+    schema_names = set()
+
+    for item in flatten_schema(schemas.get("json-ld", [])):
+        if "@type" in item:
+            if isinstance(item["@type"], list):
+                for t in item["@type"]:
+                    schema_names.add(t)
+            else:
+                schema_names.add(item["@type"])
+
+    for item in flatten_schema(schemas.get("microdata", [])):
+        if "type" in item:
+            if isinstance(item["type"], list):
+                for t in item["type"]:
+                    schema_names.add(t)
+            else:
+                schema_names.add(item["type"])
+
+    for item in flatten_schema(schemas.get("rdfa", [])):
+        if "type" in item:
+            if isinstance(item["type"], list):
+                for t in item["type"]:
+                    schema_names.add(t)
+            else:
+                schema_names.add(item["type"])
+
+    return sorted(schema_names)
+
+def normalize_base_url(url):
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+def get_domain_from_df(df):
+    """Extract domain from the first URL in the dataframe"""
+    if df is not None and len(df) > 0 and "Address" in df.columns:
+        first_url = df["Address"].iloc[0]
+        if "://" in first_url:
+            return first_url.split("/")[2]
+        else:
+            return first_url.split("/")[0]
+    return None
+
+def check_schema_markup(domain, max_workers=10, timeout=8):
+    """Check schema markup for a domain using all URL variations"""
+    base_url = normalize_base_url(domain)
+    all_schemas = set()
+    
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            
+            for variation in URL_VARIATIONS:
+                full_url = urljoin(base_url, variation)
+                future = executor.submit(extract_schemas, full_url, timeout)
+                futures.append((future, full_url))
+            
+            for future, url in futures:
+                try:
+                    schemas = future.result(timeout=timeout + 2) 
+                    if schemas:
+                        schema_names = extract_schema_names(schemas)
+                        all_schemas.update(schema_names)
+                except Exception as e:
+                    continue
+                    
+        return all_schemas
+    except Exception as e:
+        print(f"Error in check_schema_markup: {str(e)}")
+        return set()
+    
+def update_schema_markup_analysis(df, report, expected_outcomes, sources):
+    """Add schema markup analysis to the report"""
+    domain = get_domain_from_df(df)
+    
+    if domain:
+        try:
+            with st.spinner(f"Checking schema markup for {domain}... (this may take a moment)"):
+                found_schemas = check_schema_markup(domain)
+            
+            if found_schemas:
+                schema_list = sorted(list(found_schemas))
+                current_value = f"Found {len(schema_list)} types: {', '.join(schema_list)}"
+
+                if len(schema_list) >= 5:
+                    status = "✅ Pass"
+                elif len(schema_list) >= 2:
+                    status = "ℹ️ Review"
+                else:
+                    status = "❌ Fail"
+            else:
+                current_value = "No schema markup detected"
+                status = "❌ Fail"
+                
+        except Exception as e:
+            current_value = f"Error checking schemas: {str(e)}"
+            status = "ℹ️ Not Available"
+            print(f"Schema analysis error: {str(e)}")
+    else:
+        current_value = "Cannot extract domain from data"
+        status = "ℹ️ Not Available"
+    
+    report["Category"].append("Metadata & Schema")
+    report["Parameters"].append("Schema Markup")
+    report["Current Value"].append(current_value)
+    report["Expected Value"].append(expected_outcomes["Schema Markup"])
+    report["Source"].append(sources["Schema Markup"])
+    report["Status"].append(status)
+    
 def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     expected_outcomes = {
         "Website performance on desktop": "Score > 90",
@@ -66,7 +275,7 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         "Duplicate & missing H1": "Screamfrog",
         "Duplicate & missing meta title": "Screamfrog",
         "Duplicate & missing description": "Screamfrog",
-        "Schema Markup":"Manual or AIO Tool"
+        "Schema Markup": "Automated Schema Detection"
     }
 
     report = {
@@ -299,14 +508,15 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         if missing_description > 0 or duplicate_descriptions > 0
         else "✅ Pass"
     )
+    update_schema_markup_analysis(df, report, expected_outcomes, sources)
 
     # Schema Markup (not available from Screaming Frog)
-    report["Category"].append("Metadata & Schema")
-    report["Parameters"].append("Schema Markup")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Schema Markup"])
-    report["Source"].append(sources["Schema Markup"])
-    report["Status"].append("ℹ️ Not Available")
+    # report["Category"].append("Metadata & Schema")
+    # report["Parameters"].append("Schema Markup")
+    # report["Current Value"].append("N/A")
+    # report["Expected Value"].append(expected_outcomes["Schema Markup"])
+    # report["Source"].append(sources["Schema Markup"])
+    # report["Status"].append("ℹ️ Not Available")
 
     # Prepare detail data for deeper analysis
     duplicate_data = None
@@ -338,7 +548,7 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
             | df["Meta Description 1"].duplicated(keep=False)
         ][["Address", "Meta Description 1"]]
 
-
+    # Create the DataFrame AFTER all data is added to report
     final_report_df = pd.DataFrame(report)
     if not final_report_df.empty:
         final_report_df = final_report_df.set_index(["Category", "Parameters"])

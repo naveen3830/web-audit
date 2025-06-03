@@ -103,7 +103,6 @@ def flatten_schema(schema_item):
 def extract_schema_names(schemas):
     schema_names = set()
 
-    # Process JSON-LD schemas
     for item in flatten_schema(schemas.get("json-ld", [])):
         if "@type" in item:
             if isinstance(item["@type"], list):
@@ -112,7 +111,6 @@ def extract_schema_names(schemas):
             else:
                 schema_names.add(item["@type"])
 
-    # Process Microdata schemas
     for item in flatten_schema(schemas.get("microdata", [])):
         if "type" in item:
             if isinstance(item["type"], list):
@@ -131,14 +129,12 @@ def extract_schema_names(schemas):
 
     return sorted(schema_names)
 
-
 def normalize_base_url(url):
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
     
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}"
-
 
 def process_single_url(args):
     url, index, total, timeout = args
@@ -214,27 +210,15 @@ def check_multiple_urls_threaded(base_url, max_workers=10, timeout=10, verbose=T
     def update_progress(result, total_urls, completed_count):
         with progress_lock:
             completed_count[0] += 1
-            # No per-URL output here
-            
-        # # After all URLs are processed, print the summary
-        # if completed_count[0] == total_urls and verbose:
-        #     print("\nSchema Analysis Summary:")
-        #     print("=" * 40)
-        #     print(f"Successfully analyzed: {len([r for r in url_schemas if url_schemas[r]])} URLs")
-        #     print(f"Failed to analyze: {len(failed_urls)} URLs")
-    
+
     start_time = time.time()
     
-    # Process URLs concurrently
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
         future_to_url = {executor.submit(process_single_url, url_args): url_args[0] 
                         for url_args in urls_to_check}
         
-        # Process completed tasks
         for future in as_completed(future_to_url):
             result = future.result()
-            # Pass total_urls and completed_count to update_progress
             update_progress(result, len(urls_to_check), completed_count)
             
             if result['success']:
