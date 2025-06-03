@@ -1,20 +1,19 @@
 import streamlit as st
 import pandas as pd
 import os
+import re
 import requests
-import json
 import extruct
 from w3lib.html import get_base_url
 from urllib.parse import urljoin, urlparse
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 
-DATA_FILE_PATH        = BASE_DIR / "Data" / "efax_internal_html.csv"
-ALT_TAG_DATA_PATH     = BASE_DIR / "Data" / "images_missing_alt_text_efax.csv"
+DATA_FILE_PATH = BASE_DIR / "Data" / "efax_internal_html.csv"
+ALT_TAG_DATA_PATH = BASE_DIR / "Data" / "images_missing_alt_text_efax.csv"
 ORPHAN_PAGES_DATA_PATH = BASE_DIR / "Data" / "efax_orphan_urls.csv"
 
 SCHEMA_CHECKLIST = [
@@ -74,6 +73,13 @@ URL_VARIATIONS = [
     "/signup",
     "/register",
 ]
+
+def is_valid_page_url(url):
+    if re.search(r'\.(jpg|jpeg|png|gif|bmp|pdf|doc|docx|xls|xlsx|css|js)$', url, re.IGNORECASE):
+        return False
+    if "wp-content" in url.lower() or "wp-uploads" in url.lower():
+        return False
+    return True
 
 def extract_schemas(url, timeout=10):
     headers = {
@@ -424,7 +430,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Source"].append(sources["Header tags structure"])
     report["Status"].append("ℹ️ Not Available")
 
-    # Link Profile & Authority (not available from Screaming Frog)
     link_profile_metrics = ["Backlinks", "Domain authority", "Spam Score"]
     for metric in link_profile_metrics:
         report["Category"].append("Link Profile & Authority")
@@ -434,8 +439,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         report["Source"].append(sources[metric])
         report["Status"].append("ℹ️ Not Available")
 
-    # Metadata & Schema
-    # Duplicate content
     duplicate_content = 0
     if "Word Count" in df.columns and "Sentence Count" in df.columns:
         df_content = df[df["Word Count"].notna() & df["Sentence Count"].notna()]
@@ -453,7 +456,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Source"].append(sources["Duplicate content"])
     report["Status"].append("❌ Fail" if duplicate_content > 0 else "✅ Pass")
 
-    # Img alt tag
     images_missing_alt_text = 0
     if alt_tag_df is not None and not alt_tag_df.empty:
         images_missing_alt_text = len(alt_tag_df)
@@ -464,7 +466,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Source"].append(sources["Img alt tag"])
     report["Status"].append("❌ Fail" if images_missing_alt_text > 0 else "✅ Pass")
 
-    # H1 issues
     missing_h1 = df["H1-1"].isna().sum()
     duplicate_h1 = len(df[df["H1-1"].duplicated(keep=False)])
     report["Category"].append("Metadata & Schema")
@@ -476,7 +477,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         "❌ Fail" if missing_h1 > 0 or duplicate_h1 > 0 else "✅ Pass"
     )
 
-    # Meta title issues
     missing_title = df["Title 1"].isna().sum()
     duplicate_titles = 0
     df_with_titles = df[df["Title 1"].notna() & (df["Title 1"] != "")]
@@ -543,6 +543,7 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         h1_issues_data = df[df["H1-1"].isna() | df["H1-1"].duplicated(keep=False)][
             ["Address", "H1-1"]
         ]
+        h1_issues_data = h1_issues_data[h1_issues_data["Address"].apply(is_valid_page_url)]
 
     description_issues_data = None
     if missing_description > 0 or duplicate_descriptions > 0:
@@ -550,8 +551,8 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
             df["Meta Description 1"].isna()
             | df["Meta Description 1"].duplicated(keep=False)
         ][["Address", "Meta Description 1"]]
+        description_issues_data = description_issues_data[description_issues_data["Address"].apply(is_valid_page_url)]
 
-    # Create the DataFrame AFTER all data is added to report
     final_report_df = pd.DataFrame(report)
     if not final_report_df.empty:
         final_report_df = final_report_df.set_index(["Category", "Parameters"])
@@ -634,7 +635,6 @@ def main():
             file_source = "uploaded files"
 
         else:
-            # Using default file paths
             if (
                 os.path.exists(DATA_FILE_PATH)
                 and os.path.exists(ALT_TAG_DATA_PATH)
@@ -679,10 +679,9 @@ def main():
                         df, alt_tag_df, orphan_pages_df
                     )
 
-                    st.subheader("SEO Audit Results") # Single subheader for the entire report
-
+                    st.subheader("SEO Audit Results")
+                    
                     def highlight_status(val):
-                        # BRAG colour‐mapping
                         if val == "✅ Pass":
                             return "background-color: #28a745; color: white;"    # Green
                         elif val == "❌ Fail":
