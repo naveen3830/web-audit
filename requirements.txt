@@ -15,3 +15,4 @@ rich>=14.0.0
 streamlit>=1.45.0
 uvicorn>=0.34.2
 extruct>=0.18.0
+pathlib>=1.0.1

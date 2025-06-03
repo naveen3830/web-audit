@@ -9,10 +9,13 @@ from urllib.parse import urljoin, urlparse
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+from pathlib import Path
 
-DATA_FILE_PATH = r"Data\efax_internal_html.csv"
-ALT_TAG_DATA_PATH = r"Data\images_missing_alt_text_efax.csv"
-ORPHAN_PAGES_DATA_PATH = r"Data\efax_orphan_urls.csv"
+BASE_DIR = Path(__file__).parent
+
+DATA_FILE_PATH        = BASE_DIR / "Data" / "efax_internal_html.csv"
+ALT_TAG_DATA_PATH     = BASE_DIR / "Data" / "images_missing_alt_text_efax.csv"
+ORPHAN_PAGES_DATA_PATH = BASE_DIR / "Data" / "efax_orphan_urls.csv"
 
 SCHEMA_CHECKLIST = [
     ("Breadcrumbs", "BreadcrumbList"),
