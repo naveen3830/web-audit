@@ -19,6 +19,7 @@ dependencies = [
     "pathlib>=1.0.1",
     "pyautogui>=0.9.54",
     "python-dotenv>=1.1.0",
+    "python-multipart>=0.0.20",
     "requests>=2.32.3",
     "rich>=14.0.0",
     "streamlit>=1.45.0",

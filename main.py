@@ -1,32 +1,261 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import pandas as pd
-import io
-from typing import Optional, Dict, Any
-import os
 from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+import pandas as pd
+import os
+import re
+import requests
+import extruct
+from w3lib.html import get_base_url
+from urllib.parse import urljoin, urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+from pathlib import Path
+import json
+import io
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
-app = FastAPI(
-    title="Web Audit Data Analyzer API",
-    description="A comprehensive analysis of your website's SEO health based on Screaming Frog data",
-    version="1.0.0"
+app = FastAPI(title="Web Audit Data Analyzer API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Default file paths
-DATA_FILE_PATH = r"Data\efax_internal_html.csv"
-ALT_TAG_DATA_PATH = r"Data\images_missing_alt_text_efax.csv"
-ORPHAN_PAGES_DATA_PATH = r"Data\efax_orphan_urls.csv"
+BASE_DIR = Path(__file__).parent
+DATA_FILE_PATH = BASE_DIR / "Data" / "efax_internal_html.csv"
+ALT_TAG_DATA_PATH = BASE_DIR / "Data" / "images_missing_alt_text_efax.csv"
+ORPHAN_PAGES_DATA_PATH = BASE_DIR / "Data" / "efax_orphan_urls.csv"
 
-class AuditResponse(BaseModel):
+SCHEMA_CHECKLIST = [
+    ("Breadcrumbs", "BreadcrumbList"),
+    ("FAQ", "FAQPage"),
+    ("Article", "Article"),
+    ("Video", "VideoObject"),
+    ("Organization", "Organization"),
+    ("How-to", "HowTo"),
+    ("WebPage", "WebPage"),
+    ("Product", "Product"),
+    ("Review", "Review"),
+    ("Person", "Person"),
+    ("Event", "Event"),
+    ("Recipe", "Recipe"),
+    ("LocalBusiness", "LocalBusiness"),
+    ("CreativeWork", "CreativeWork"),
+    ("ItemList", "ItemList"),
+    ("JobPosting", "JobPosting"),
+    ("Course", "Course"),
+    ("ImageObject", "ImageObject"),
+    ("Service", "Service"),
+]
+
+URL_VARIATIONS = [
+    "",
+    "/about",
+    "/about-us",
+    "/products",
+    "/services",
+    "/solutions",
+    "/blog",
+    "/blogs",
+    "/cyberglossary",
+    "/news",
+    "/resources",
+    "/how-to",
+    "/tutorials",
+    "/guides",
+    "/faq",
+    "/help",
+    "/support",
+    "/contact",
+    "/contact-us",
+    "/reviews",
+    "/testimonials",
+    "/portfolio",
+    "/cases",
+    "/case-studies",
+    "/team",
+    "/careers",
+    "/jobs",
+    "/catalog",
+    "/pricing",
+    "/plans",
+    "/login",
+    "/signup",
+    "/register",
+]
+
+# Pydantic models for request/response
+class FileUploadResponse(BaseModel):
+    message: str
+    rows: int
+    columns: List[str]
+
+class AnalysisResponse(BaseModel):
     domain: str
-    report: Dict[str, Any]
-    detailed_issues: Dict[str, Any]
-    summary: Dict[str, int]
+    report: List[Dict[str, Any]]
+    detailed_data: Dict[str, Any]
+    alt_tag_data: Optional[List[Dict[str, Any]]] = None
+    orphan_pages_data: Optional[List[Dict[str, Any]]] = None
+
+class FileValidationResponse(BaseModel):
+    files_exist: bool
+    missing_files: List[str]
+
+# Helper functions (same as original)
+def is_valid_page_url(url):
+    if re.search(r'\.(jpg|jpeg|png|gif|bmp|pdf|doc|docx|xls|xlsx|css|js)$', url, re.IGNORECASE):
+        return False
+    if "wp-content" in url.lower() or "wp-uploads" in url.lower():
+        return False
+    return True
+
+def extract_schemas(url, timeout=10):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.4472.124 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        base_url = get_base_url(response.text, response.url)
+
+        data = extruct.extract(
+            response.text, base_url=base_url, syntaxes=["json-ld", "microdata", "rdfa"]
+        )
+        return data
+    except requests.exceptions.RequestException:
+        return None
+
+def flatten_schema(schema_item):
+    if isinstance(schema_item, list):
+        for item in schema_item:
+            yield from flatten_schema(item)
+    elif isinstance(schema_item, dict):
+        if "@graph" in schema_item:
+            yield from flatten_schema(schema_item["@graph"])
+        yield schema_item
+
+def extract_schema_names(schemas):
+    schema_names = set()
+
+    for item in flatten_schema(schemas.get("json-ld", [])):
+        if "@type" in item:
+            if isinstance(item["@type"], list):
+                for t in item["@type"]:
+                    schema_names.add(t)
+            else:
+                schema_names.add(item["@type"])
+
+    for item in flatten_schema(schemas.get("microdata", [])):
+        if "type" in item:
+            if isinstance(item["type"], list):
+                for t in item["type"]:
+                    schema_names.add(t)
+            else:
+                schema_names.add(item["type"])
+
+    for item in flatten_schema(schemas.get("rdfa", [])):
+        if "type" in item:
+            if isinstance(item["type"], list):
+                for t in item["type"]:
+                    schema_names.add(t)
+            else:
+                schema_names.add(item["type"])
+
+    return sorted(schema_names)
+
+def normalize_base_url(url):
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+def get_domain_from_df(df):
+    """Extract domain from the first URL in the dataframe"""
+    if df is not None and len(df) > 0 and "Address" in df.columns:
+        first_url = df["Address"].iloc[0]
+        if "://" in first_url:
+            return first_url.split("/")[2]
+        else:
+            return first_url.split("/")[0]
+    return None
+
+def check_schema_markup(domain, max_workers=10, timeout=8):
+    base_url = normalize_base_url(domain)
+    all_schemas = set()
+    
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            
+            for variation in URL_VARIATIONS:
+                full_url = urljoin(base_url, variation)
+                future = executor.submit(extract_schemas, full_url, timeout)
+                futures.append((future, full_url))
+            
+            for future, url in futures:
+                try:
+                    schemas = future.result(timeout=timeout + 2) 
+                    if schemas:
+                        schema_names = extract_schema_names(schemas)
+                        all_schemas.update(schema_names)
+                except Exception as e:
+                    continue
+                    
+        return all_schemas
+    except Exception as e:
+        print(f"Error in check_schema_markup: {str(e)}")
+        return set()
+
+def update_schema_markup_analysis(df, report, expected_outcomes, sources):
+    domain = get_domain_from_df(df)
+    
+    if domain:
+        try:
+            found_schemas = check_schema_markup(domain)
+            
+            if found_schemas:
+                schema_list = sorted(list(found_schemas))
+                current_value = f"Found {len(schema_list)} types: {', '.join(schema_list)}"
+
+                if len(schema_list) >= 5:
+                    status = "✅ Pass"
+                elif len(schema_list) >= 2:
+                    status = "ℹ️ Review"
+                else:
+                    status = "❌ Fail"
+            else:
+                current_value = "No schema markup detected"
+                status = "❌ Fail"
+                
+        except Exception as e:
+            current_value = f"Error checking schemas: {str(e)}"
+            status = "ℹ️ Not Available"
+            print(f"Schema analysis error: {str(e)}")
+    else:
+        current_value = "Cannot extract domain from data"
+        status = "ℹ️ Not Available"
+    
+    report["Category"].append("Metadata & Schema")
+    report["Parameters"].append("Schema Markup")
+    report["Current Value"].append(current_value)
+    report["Expected Value"].append(expected_outcomes["Schema Markup"])
+    report["Source"].append(sources["Schema Markup"])
+    report["Status"].append(status)
 
 def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
-    """
-    Analyze the Screaming Frog data and return audit results
-    """
     expected_outcomes = {
         "Website performance on desktop": "Score > 90",
         "Website performance on mobile": "Score > 80",
@@ -86,7 +315,7 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         "Duplicate & missing H1": "Screamfrog",
         "Duplicate & missing meta title": "Screamfrog",
         "Duplicate & missing description": "Screamfrog",
-        "Schema Markup":"Manual or AIO Tool"
+        "Schema Markup": "Automated Schema Detection"
     }
 
     report = {
@@ -98,7 +327,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         "Status": [],
     }
 
-    # Performance & Core Web Vitals (These are not available from Screaming Frog)
     performance_metrics = [
         "Website performance on desktop",
         "Website performance on mobile",
@@ -115,9 +343,8 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         report["Current Value"].append("N/A")
         report["Expected Value"].append(expected_outcomes[metric])
         report["Source"].append(sources[metric])
-        report["Status"].append("Not Available")
+        report["Status"].append("ℹ️ Not Available")
 
-    # Crawling & Indexing
     if "Indexability" in df.columns and "Indexability Status" in df.columns:
         indexed_pages = len(df[df["Indexability"] == "Indexable"])
         report["Category"].append("Crawling & Indexing")
@@ -125,7 +352,7 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         report["Current Value"].append(indexed_pages)
         report["Expected Value"].append(expected_outcomes["Indexed pages"])
         report["Source"].append(sources["Indexed pages"])
-        report["Status"].append("Review")
+        report["Status"].append("ℹ️ Review")
 
         non_indexed_pages = len(
             df[df["Indexability Status"].str.contains("noindex", na=False)]
@@ -135,69 +362,40 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         report["Current Value"].append(non_indexed_pages)
         report["Expected Value"].append(expected_outcomes["Non indexed pages"])
         report["Source"].append(sources["Non indexed pages"])
-        report["Status"].append("Review" if non_indexed_pages > 0 else "Pass")
+        report["Status"].append("ℹ️ Review" if non_indexed_pages > 0 else "✅ Pass")
     else:
+        for param in ["Indexed pages", "Non indexed pages"]:
+            report["Category"].append("Crawling & Indexing")
+            report["Parameters"].append(param)
+            report["Current Value"].append("N/A")
+            report["Expected Value"].append(expected_outcomes[param])
+            report["Source"].append(sources[param])
+            report["Status"].append("ℹ️ Not Available")
+
+    for param in ["Robots.txt file optimization", "Sitemap file optimization"]:
         report["Category"].append("Crawling & Indexing")
-        report["Parameters"].append("Indexed pages")
+        report["Parameters"].append(param)
         report["Current Value"].append("N/A")
-        report["Expected Value"].append(expected_outcomes["Indexed pages"])
-        report["Source"].append(sources["Indexed pages"])
-        report["Status"].append("Not Available")
+        report["Expected Value"].append(expected_outcomes[param])
+        report["Source"].append(sources[param])
+        report["Status"].append("ℹ️ Not Available")
 
-        report["Category"].append("Crawling & Indexing")
-        report["Parameters"].append("Non indexed pages")
-        report["Current Value"].append("N/A")
-        report["Expected Value"].append(expected_outcomes["Non indexed pages"])
-        report["Source"].append(sources["Non indexed pages"])
-        report["Status"].append("Not Available")
-
-    # Add Robots.txt and Sitemap (not available from Screaming Frog)
-    report["Category"].append("Crawling & Indexing")
-    report["Parameters"].append("Robots.txt file optimization")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Robots.txt file optimization"])
-    report["Source"].append(sources["Robots.txt file optimization"])
-    report["Status"].append("Not Available")
-
-    report["Category"].append("Crawling & Indexing")
-    report["Parameters"].append("Sitemap file optimization")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Sitemap file optimization"])
-    report["Source"].append(sources["Sitemap file optimization"])
-    report["Status"].append("Not Available")
-
-    # Site Health & Structure
     broken_internal_links = len(df[df["Status Code"] == 404])
     report["Category"].append("Site Health & Structure")
     report["Parameters"].append("Broken internal links (404)")
     report["Current Value"].append(broken_internal_links)
     report["Expected Value"].append(expected_outcomes["Broken internal links (404)"])
     report["Source"].append(sources["Broken internal links (404)"])
-    report["Status"].append("Fail" if broken_internal_links > 0 else "Pass")
+    report["Status"].append("❌ Fail" if broken_internal_links > 0 else "✅ Pass")
 
-    # External links and backlinks (not available from Screaming Frog)
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Broken external links")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Broken external links"])
-    report["Source"].append(sources["Broken external links"])
-    report["Status"].append("Not Available")
+    for param in ["Broken external links", "Broken backlinks", "Broken Images"]:
+        report["Category"].append("Site Health & Structure")
+        report["Parameters"].append(param)
+        report["Current Value"].append("N/A")
+        report["Expected Value"].append(expected_outcomes[param])
+        report["Source"].append(sources[param])
+        report["Status"].append("ℹ️ Not Available")
 
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Broken backlinks")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Broken backlinks"])
-    report["Source"].append(sources["Broken backlinks"])
-    report["Status"].append("Not Available")
-
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Broken Images")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Broken Images"])
-    report["Source"].append(sources["Broken Images"])
-    report["Status"].append("Not Available")
-
-    # Orphan pages
     orphan_pages_count = 0
     if orphan_pages_df is not None and not orphan_pages_df.empty:
         orphan_pages_count = len(orphan_pages_df)
@@ -206,33 +404,25 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Current Value"].append(orphan_pages_count)
     report["Expected Value"].append(expected_outcomes["Orphan page"])
     report["Source"].append(sources["Orphan page"])
-    report["Status"].append("Fail" if orphan_pages_count > 0 else "Pass")
+    report["Status"].append("❌ Fail" if orphan_pages_count > 0 else "✅ Pass")
 
-    # Canonical Errors
     canonical_errors = len(df[df["Canonical Link Element 1"] != df["Address"]])
     report["Category"].append("Site Health & Structure")
     report["Parameters"].append("Canonical Errors")
     report["Current Value"].append(canonical_errors)
     report["Expected Value"].append(expected_outcomes["Canonical Errors"])
     report["Source"].append(sources["Canonical Errors"])
-    report["Status"].append("Fail" if canonical_errors > 0 else "Pass")
+    report["Status"].append("❌ Fail" if canonical_errors > 0 else "✅ Pass")
 
-    # Information architecture and header tags structure (not available from Screaming Frog)
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Information architecture")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Information architecture"])
-    report["Source"].append(sources["Information architecture"])
-    report["Status"].append("Not Available")
+    for param in ["Information architecture", "Header tags structure"]:
+        report["Category"].append("Site Health & Structure")
+        report["Parameters"].append(param)
+        report["Current Value"].append("N/A")
+        report["Expected Value"].append(expected_outcomes[param])
+        report["Source"].append(sources[param])
+        report["Status"].append("ℹ️ Not Available")
 
-    report["Category"].append("Site Health & Structure")
-    report["Parameters"].append("Header tags structure")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Header tags structure"])
-    report["Source"].append(sources["Header tags structure"])
-    report["Status"].append("Not Available")
-
-    # Link Profile & Authority (not available from Screaming Frog)
+    # Link Profile & Authority
     link_profile_metrics = ["Backlinks", "Domain authority", "Spam Score"]
     for metric in link_profile_metrics:
         report["Category"].append("Link Profile & Authority")
@@ -240,10 +430,9 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         report["Current Value"].append("N/A")
         report["Expected Value"].append(expected_outcomes[metric])
         report["Source"].append(sources[metric])
-        report["Status"].append("Not Available")
+        report["Status"].append("ℹ️ Not Available")
 
-    # Metadata & Schema
-    # Duplicate content
+    # Metadata & Schema analysis
     duplicate_content = 0
     if "Word Count" in df.columns and "Sentence Count" in df.columns:
         df_content = df[df["Word Count"].notna() & df["Sentence Count"].notna()]
@@ -259,9 +448,9 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Current Value"].append(duplicate_content)
     report["Expected Value"].append(expected_outcomes["Duplicate content"])
     report["Source"].append(sources["Duplicate content"])
-    report["Status"].append("Fail" if duplicate_content > 0 else "Pass")
+    report["Status"].append("❌ Fail" if duplicate_content > 0 else "✅ Pass")
 
-    # Img alt tag
+    # Alt tag analysis
     images_missing_alt_text = 0
     if alt_tag_df is not None and not alt_tag_df.empty:
         images_missing_alt_text = len(alt_tag_df)
@@ -270,9 +459,9 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Current Value"].append(images_missing_alt_text)
     report["Expected Value"].append(expected_outcomes["Img alt tag"])
     report["Source"].append(sources["Img alt tag"])
-    report["Status"].append("Fail" if images_missing_alt_text > 0 else "Pass")
+    report["Status"].append("❌ Fail" if images_missing_alt_text > 0 else "✅ Pass")
 
-    # H1 issues
+    # H1 analysis
     missing_h1 = df["H1-1"].isna().sum()
     duplicate_h1 = len(df[df["H1-1"].duplicated(keep=False)])
     report["Category"].append("Metadata & Schema")
@@ -281,10 +470,10 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Expected Value"].append(expected_outcomes["Duplicate & missing H1"])
     report["Source"].append(sources["Duplicate & missing H1"])
     report["Status"].append(
-        "Fail" if missing_h1 > 0 or duplicate_h1 > 0 else "Pass"
+        "❌ Fail" if missing_h1 > 0 or duplicate_h1 > 0 else "✅ Pass"
     )
 
-    # Meta title issues
+    # Meta title analysis
     missing_title = df["Title 1"].isna().sum()
     duplicate_titles = 0
     df_with_titles = df[df["Title 1"].notna() & (df["Title 1"] != "")]
@@ -299,10 +488,10 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     report["Expected Value"].append(expected_outcomes["Duplicate & missing meta title"])
     report["Source"].append(sources["Duplicate & missing meta title"])
     report["Status"].append(
-        "Fail" if missing_title > 0 or duplicate_titles > 0 else "Pass"
+        "❌ Fail" if missing_title > 0 or duplicate_titles > 0 else "✅ Pass"
     )
 
-    # Meta description issues
+    # Meta description analysis
     missing_description = df["Meta Description 1"].isna().sum()
     duplicate_descriptions = len(df[df["Meta Description 1"].duplicated(keep=False)])
     report["Category"].append("Metadata & Schema")
@@ -315,25 +504,20 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     )
     report["Source"].append(sources["Duplicate & missing description"])
     report["Status"].append(
-        "Fail"
+        "❌ Fail"
         if missing_description > 0 or duplicate_descriptions > 0
-        else "Pass"
+        else "✅ Pass"
     )
 
-    # Schema Markup (not available from Screaming Frog)
-    report["Category"].append("Metadata & Schema")
-    report["Parameters"].append("Schema Markup")
-    report["Current Value"].append("N/A")
-    report["Expected Value"].append(expected_outcomes["Schema Markup"])
-    report["Source"].append(sources["Schema Markup"])
-    report["Status"].append("Not Available")
+    # Schema markup analysis
+    update_schema_markup_analysis(df, report, expected_outcomes, sources)
 
-    # Prepare detail data for deeper analysis
+    # Prepare detailed data for deeper analysis
     duplicate_data = None
     if duplicate_titles > 0:
         duplicate_data = df_with_titles[
             df_with_titles["Title 1"].duplicated(keep=False)
-        ][["Address", "Title 1", "Title 1 Length"]].to_dict('records')
+        ][["Address", "Title 1", "Title 1 Length"]]
 
     duplicate_content_data = None
     if (
@@ -343,40 +527,49 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
     ):
         duplicate_content_data = df[
             df.duplicated(subset=["Word Count", "Sentence Count"], keep=False)
-        ][["Address", "Word Count", "Sentence Count"]].to_dict('records')
+        ][["Address", "Word Count", "Sentence Count"]]
 
     h1_issues_data = None
     if missing_h1 > 0 or duplicate_h1 > 0:
         h1_issues_data = df[df["H1-1"].isna() | df["H1-1"].duplicated(keep=False)][
             ["Address", "H1-1"]
-        ].to_dict('records')
+        ]
+        h1_issues_data = h1_issues_data[h1_issues_data["Address"].apply(is_valid_page_url)]
 
     description_issues_data = None
     if missing_description > 0 or duplicate_descriptions > 0:
         description_issues_data = df[
             df["Meta Description 1"].isna()
             | df["Meta Description 1"].duplicated(keep=False)
-        ][["Address", "Meta Description 1"]].to_dict('records')
+        ][["Address", "Meta Description 1"]]
+        description_issues_data = description_issues_data[description_issues_data["Address"].apply(is_valid_page_url)]
 
-    # Convert orphan pages and alt tag data to dict
-    orphan_pages_data = None
-    if orphan_pages_df is not None and not orphan_pages_df.empty:
-        orphan_pages_data = orphan_pages_df.to_dict('records')
+    # Convert report to list of dictionaries for JSON response
+    report_list = []
+    for i in range(len(report["Category"])):
+        report_list.append({
+            "Category": report["Category"][i],
+            "Parameters": report["Parameters"][i],
+            "Current Value": report["Current Value"][i],
+            "Expected Value": report["Expected Value"][i],
+            "Source": report["Source"][i],
+            "Status": report["Status"][i]
+        })
 
-    alt_tag_data = None
-    if alt_tag_df is not None and not alt_tag_df.empty:
-        alt_tag_data = alt_tag_df.to_dict('records')
+    # Convert detailed data to JSON serializable format
+    detailed_data_json = {}
+    if duplicate_data is not None and not duplicate_data.empty:
+        detailed_data_json["duplicate_titles"] = duplicate_data.to_dict('records')
+    if duplicate_content_data is not None and not duplicate_content_data.empty:
+        detailed_data_json["duplicate_content"] = duplicate_content_data.to_dict('records')
+    if h1_issues_data is not None and not h1_issues_data.empty:
+        detailed_data_json["h1_issues"] = h1_issues_data.to_dict('records')
+    if description_issues_data is not None and not description_issues_data.empty:
+        detailed_data_json["description_issues"] = description_issues_data.to_dict('records')
 
-    final_report_df = pd.DataFrame(report)
-    
-    return final_report_df.to_dict('records'), {
-        "duplicate_titles": duplicate_data,
-        "duplicate_content": duplicate_content_data,
-        "h1_issues": h1_issues_data,
-        "description_issues": description_issues_data,
-        "orphan_pages": orphan_pages_data,
-        "images_missing_alt_text": alt_tag_data,
-    }
+    return report_list, detailed_data_json
+
+# API Endpoints
 
 @app.get("/")
 async def root():
@@ -386,128 +579,110 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-@app.post("/analyze/upload", response_model=AuditResponse)
-async def analyze_uploaded_files(
-    main_file: UploadFile = File(..., description="Main Screaming Frog CSV export"),
-    alt_tag_file: UploadFile = File(..., description="Images Missing Alt Tags CSV"),
-    orphan_file: UploadFile = File(..., description="Orphan Pages CSV")
-):
-    """
-    Analyze uploaded CSV files and return SEO audit results
-    """
+@app.get("/validate-default-files")
+async def validate_default_files() -> FileValidationResponse:
+    """Check if default files exist at their expected paths"""
+    missing_files = []
+    
+    if not os.path.exists(DATA_FILE_PATH):
+        missing_files.append(f"Main data file: {DATA_FILE_PATH}")
+    if not os.path.exists(ALT_TAG_DATA_PATH):
+        missing_files.append(f"Alt tag data file: {ALT_TAG_DATA_PATH}")
+    if not os.path.exists(ORPHAN_PAGES_DATA_PATH):
+        missing_files.append(f"Orphan pages data file: {ORPHAN_PAGES_DATA_PATH}")
+    
+    return FileValidationResponse(
+        files_exist=len(missing_files) == 0,
+        missing_files=missing_files
+    )
+
+@app.post("/upload-file")
+async def upload_single_file(
+    file: UploadFile = File(...),
+    file_type: str = Form(...)
+) -> FileUploadResponse:
+    """Upload and validate a single CSV file"""
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are allowed")
+    
     try:
-        # Read uploaded files
-        main_content = await main_file.read()
-        alt_tag_content = await alt_tag_file.read()
-        orphan_content = await orphan_file.read()
+        contents = await file.read()
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
         
-        # Convert to DataFrames
-        df = pd.read_csv(io.StringIO(main_content.decode('utf-8')))
-        alt_tag_df = pd.read_csv(io.StringIO(alt_tag_content.decode('utf-8')))
-        orphan_pages_df = pd.read_csv(io.StringIO(orphan_content.decode('utf-8')))
+        return FileUploadResponse(
+            message=f"{file_type} file uploaded successfully",
+            rows=len(df),
+            columns=list(df.columns)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
+
+@app.post("/analyze-uploaded-data")
+async def analyze_uploaded_data(
+    main_file: UploadFile = File(...),
+    alt_tag_file: UploadFile = File(...),
+    orphan_file: UploadFile = File(...)
+) -> AnalysisResponse:
+
+    try:
+        main_contents = await main_file.read()
+        df = pd.read_csv(io.StringIO(main_contents.decode('utf-8')))
         
-        if df.empty:
-            raise HTTPException(status_code=400, detail="Main CSV file is empty")
+        alt_contents = await alt_tag_file.read()
+        alt_tag_df = pd.read_csv(io.StringIO(alt_contents.decode('utf-8')))
         
-        # Extract domain
-        domain = (
-            df["Address"].iloc[0].split("/")[2]
-            if "://" in df["Address"].iloc[0]
-            else df["Address"].iloc[0]
+        orphan_contents = await orphan_file.read()
+        orphan_pages_df = pd.read_csv(io.StringIO(orphan_contents.decode('utf-8')))
+        
+        domain = get_domain_from_df(df)
+        if not domain:
+            raise HTTPException(status_code=400, detail="Cannot extract domain from main file")
+
+        report_list, detailed_data = await asyncio.get_event_loop().run_in_executor(
+            None, analyze_screaming_frog_data, df, alt_tag_df, orphan_pages_df
         )
         
-        # Analyze data
-        report, detailed_data = analyze_screaming_frog_data(df, alt_tag_df, orphan_pages_df)
-        
-        # Calculate summary statistics
-        status_counts = {}
-        for item in report:
-            status = item["Status"]
-            status_counts[status] = status_counts.get(status, 0) + 1
-        
-        return AuditResponse(
+        return AnalysisResponse(
             domain=domain,
-            report=report,
-            detailed_issues=detailed_data,
-            summary=status_counts
+            report=report_list,
+            detailed_data=detailed_data,
+            alt_tag_data=alt_tag_df.to_dict('records') if not alt_tag_df.empty else None,
+            orphan_pages_data=orphan_pages_df.to_dict('records') if not orphan_pages_df.empty else None
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing files: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-@app.post("/analyze/default")
-async def analyze_default_files():
-    """
-    Analyze files from default file paths and return SEO audit results
-    """
+@app.post("/analyze-default-data")
+async def analyze_default_data() -> AnalysisResponse:
+
     try:
-        # Check if default files exist
         if not all([
             os.path.exists(DATA_FILE_PATH),
-            os.path.exists(ALT_TAG_DATA_PATH), 
+            os.path.exists(ALT_TAG_DATA_PATH),
             os.path.exists(ORPHAN_PAGES_DATA_PATH)
         ]):
-            missing_files = []
-            if not os.path.exists(DATA_FILE_PATH):
-                missing_files.append(f"Main data file: {DATA_FILE_PATH}")
-            if not os.path.exists(ALT_TAG_DATA_PATH):
-                missing_files.append(f"Alt tag data file: {ALT_TAG_DATA_PATH}")
-            if not os.path.exists(ORPHAN_PAGES_DATA_PATH):
-                missing_files.append(f"Orphan pages data file: {ORPHAN_PAGES_DATA_PATH}")
-            
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Default files not found: {', '.join(missing_files)}"
-            )
+            raise HTTPException(status_code=404, detail="Default files not found")
         
-        # Load files
         df = pd.read_csv(DATA_FILE_PATH)
         alt_tag_df = pd.read_csv(ALT_TAG_DATA_PATH)
         orphan_pages_df = pd.read_csv(ORPHAN_PAGES_DATA_PATH)
         
-        if df.empty:
-            raise HTTPException(status_code=400, detail="Main CSV file is empty")
+        domain = get_domain_from_df(df)
+        if not domain:
+            raise HTTPException(status_code=400, detail="Cannot extract domain from data")
         
-        # Extract domain
-        domain = (
-            df["Address"].iloc[0].split("/")[2]
-            if "://" in df["Address"].iloc[0]
-            else df["Address"].iloc[0]
+        report_list, detailed_data = await asyncio.get_event_loop().run_in_executor(
+            None, analyze_screaming_frog_data, df, alt_tag_df, orphan_pages_df
         )
         
-        # Analyze data
-        report, detailed_data = analyze_screaming_frog_data(df, alt_tag_df, orphan_pages_df)
-        
-        # Calculate summary statistics
-        status_counts = {}
-        for item in report:
-            status = item["Status"]
-            status_counts[status] = status_counts.get(status, 0) + 1
-        
-        return AuditResponse(
+        return AnalysisResponse(
             domain=domain,
-            report=report,
-            detailed_issues=detailed_data,
-            summary=status_counts
+            report=report_list,
+            detailed_data=detailed_data,
+            alt_tag_data=alt_tag_df.to_dict('records') if not alt_tag_df.empty else None,
+            orphan_pages_data=orphan_pages_df.to_dict('records') if not orphan_pages_df.empty else None
         )
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing files: {str(e)}")
-
-@app.get("/report/csv/{domain}")
-async def download_csv_report(domain: str):
-    """
-    Download the audit report as CSV (placeholder - requires storing results)
-    """
-    # Note: In a real implementation, you'd need to store the results 
-    # (e.g., in a database) and retrieve them here
-    raise HTTPException(
-        status_code=501, 
-        detail="CSV download requires result storage implementation"
-    )
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")

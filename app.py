@@ -187,7 +187,6 @@ def check_schema_markup(domain, max_workers=10, timeout=8):
         return set()
     
 def update_schema_markup_analysis(df, report, expected_outcomes, sources):
-    """Add schema markup analysis to the report"""
     domain = get_domain_from_df(df)
     
     if domain:
@@ -296,7 +295,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         "Status": [],
     }
 
-    # Performance & Core Web Vitals (These are not available from Screaming Frog)
     performance_metrics = [
         "Website performance on desktop",
         "Website performance on mobile",
@@ -315,7 +313,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         report["Source"].append(sources[metric])
         report["Status"].append("ℹ️ Not Available")
 
-    # Crawling & Indexing
     if "Indexability" in df.columns and "Indexability Status" in df.columns:
         indexed_pages = len(df[df["Indexability"] == "Indexable"])
         report["Category"].append("Crawling & Indexing")
@@ -349,7 +346,6 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         report["Source"].append(sources["Non indexed pages"])
         report["Status"].append("ℹ️ Not Available")
 
-    # Add Robots.txt and Sitemap (not available from Screaming Frog)
     report["Category"].append("Crawling & Indexing")
     report["Parameters"].append("Robots.txt file optimization")
     report["Current Value"].append("N/A")
