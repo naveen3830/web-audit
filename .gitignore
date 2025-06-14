@@ -5,6 +5,8 @@ __pycache__/
 sf_automation.log
 sf_after_crawl.log
 /debug
-screaming_frog_automation.py
 sf_after_crawl.png
 app1.py
+header.py
+.ruff_cache/
+
