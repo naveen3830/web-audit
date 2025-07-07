@@ -7,3 +7,4 @@ streamlit>=1.45.0
 extruct>=0.18.0
 pathlib>=1.0.1
 python-multipart>=0.0.20
+extruct==0.18.0

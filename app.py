@@ -6,7 +6,7 @@ from collections import Counter
 import requests
 import logging
 from urllib3.exceptions import InsecureRequestWarning
-
+from urllib.parse import urlparse, parse_qs
 from modules.helper_function import*
 
 # Disable SSL warnings
@@ -19,6 +19,123 @@ BASE_DIR = Path(__file__).parent
 DATA_FILE_PATH = BASE_DIR / "Data" / "efax_internal_html.csv"
 ALT_TAG_DATA_PATH = BASE_DIR / "Data" / "images_missing_alt_text_efax.csv"
 ORPHAN_PAGES_DATA_PATH = BASE_DIR / "Data" / "efax_orphan_urls.csv"
+
+def filter_pages(df, include_query_params=False, custom_exclusions=None):
+    original_count = len(df)
+    
+    default_exclusions = {
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.zip', '.rar', '.tar', '.gz', '.7z',
+        '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.ico', '.bmp',
+        '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mp3', '.wav', '.ogg',
+        '.css', '.js', '.xml', '.json', '.txt', '.csv',
+        '.woff', '.woff2', '.ttf', '.eot', '.otf'
+    }
+    
+    if custom_exclusions:
+        default_exclusions.update(custom_exclusions)
+    
+    filtered_df = df.copy()
+    
+    filter_stats = {
+        'original_count': original_count,
+        'excluded_extensions': 0,
+        'excluded_query_params': 0,
+        'excluded_fragments': 0,
+        'final_count': 0
+    }
+    
+    extension_mask = filtered_df['Address'].str.lower().str.contains(
+        '|'.join([f'\\{ext}' for ext in default_exclusions]), 
+        regex=True, 
+        na=False
+    )
+    excluded_by_extension = filtered_df[extension_mask]
+    filter_stats['excluded_extensions'] = len(excluded_by_extension)
+    filtered_df = filtered_df[~extension_mask]
+
+    if not include_query_params:
+        query_mask = filtered_df['Address'].str.contains(r'\?', regex=True, na=False)
+        excluded_by_query = filtered_df[query_mask]
+        filter_stats['excluded_query_params'] = len(excluded_by_query)
+        filtered_df = filtered_df[~query_mask]
+    
+    fragment_mask = filtered_df['Address'].str.contains(r'#', regex=True, na=False)
+    excluded_by_fragment = filtered_df[fragment_mask]
+    filter_stats['excluded_fragments'] = len(excluded_by_fragment)
+    filtered_df = filtered_df[~fragment_mask]
+    
+    api_mask = filtered_df['Address'].str.contains(r'/api/|/ajax/|/json/|\.json|\.xml', regex=True, na=False)
+    excluded_by_api = filtered_df[api_mask]
+    filter_stats['excluded_api'] = len(excluded_by_api)
+    filtered_df = filtered_df[~api_mask]
+    
+    admin_mask = filtered_df['Address'].str.contains(r'/admin/|/wp-admin/|/administrator/|/backend/', regex=True, na=False)
+    excluded_by_admin = filtered_df[admin_mask]
+    filter_stats['excluded_admin'] = len(excluded_by_admin)
+    filtered_df = filtered_df[~admin_mask]
+    
+    filter_stats['final_count'] = len(filtered_df)
+    
+    return filtered_df, filter_stats
+
+def display_filter_summary(filter_stats):
+    """Display filtering summary in Streamlit"""
+    st.subheader("🔍 Page Filtering Summary")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Original Pages",
+            f"{filter_stats['original_count']:,}",
+            help="Total pages in Screaming Frog export"
+        )
+    
+    with col2:
+        st.metric(
+            "Filtered Pages",
+            f"{filter_stats['final_count']:,}",
+            help="Pages after filtering non-HTML content"
+        )
+    
+    with col3:
+        excluded_total = (filter_stats['original_count'] - filter_stats['final_count'])
+        st.metric(
+            "Excluded Pages",
+            f"{excluded_total:,}",
+            help="Total pages excluded from analysis"
+        )
+    
+    with col4:
+        retention_rate = (filter_stats['final_count'] / filter_stats['original_count']) * 100
+        st.metric(
+            "Retention Rate",
+            f"{retention_rate:.1f}%",
+            help="Percentage of pages kept after filtering"
+        )
+    
+    # Detailed breakdown
+    with st.expander("📊 Detailed Filtering Breakdown"):
+        breakdown_data = {
+            'Filter Type': [
+                'File Extensions (.pdf, .png, etc.)',
+                'Query Parameters (?q=, etc.)',
+                'URL Fragments (#section)',
+                'API Endpoints',
+                'Admin/Backend URLs'
+            ],
+            'Pages Excluded': [
+                filter_stats.get('excluded_extensions', 0),
+                filter_stats.get('excluded_query_params', 0),
+                filter_stats.get('excluded_fragments', 0),
+                filter_stats.get('excluded_api', 0),
+                filter_stats.get('excluded_admin', 0)
+            ]
+        }
+        
+        breakdown_df = pd.DataFrame(breakdown_data)
+        st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
 
 def display_summary_cards(domain, total_pages, category_counts, language_counts):
     col1, col2, col3, col4 = st.columns(4)
@@ -79,10 +196,15 @@ def main():
             with col1:
                 st.markdown("### Main Screaming Frog Data")
                 main_file = st.file_uploader(
-                    "Upload Screaming Frog CSV export", type="csv", key="main_file"
+                    "Upload Screaming Frog CSV or Excel export", 
+                    type=["csv", "xls", "xlsx"], 
+                    key="main_file"
                 )
                 if main_file:
-                    df = pd.read_csv(main_file)
+                    if main_file.name.endswith(".csv"):
+                        df = pd.read_csv(main_file)
+                    else:
+                        df = pd.read_excel(main_file)
                     st.success(f"✅ Main file uploaded with {len(df)} rows")
                 else:
                     st.warning("Main file required")
@@ -90,10 +212,15 @@ def main():
             with col2:
                 st.markdown("### Alt Tag Data")
                 alt_tag_file = st.file_uploader(
-                    "Upload Images Missing Alt Tags CSV", type="csv", key="alt_tag_file"
+                    "Upload Images Missing Alt Tags CSV or Excel", 
+                    type=["csv", "xls", "xlsx"], 
+                    key="alt_tag_file"
                 )
                 if alt_tag_file:
-                    alt_tag_df = pd.read_csv(alt_tag_file)
+                    if alt_tag_file.name.endswith(".csv"):
+                        alt_tag_df = pd.read_csv(alt_tag_file)
+                    else:
+                        alt_tag_df = pd.read_excel(alt_tag_file)
                     st.success(f"✅ Alt tag file uploaded with {len(alt_tag_df)} rows")
                 else:
                     st.warning("Alt tag file required")
@@ -101,10 +228,15 @@ def main():
             with col3:
                 st.markdown("### Orphan Pages Data")
                 orphan_file = st.file_uploader(
-                    "Upload Orphan Pages CSV", type="csv", key="orphan_file"
+                    "Upload Orphan Pages CSV or Excel", 
+                    type=["csv", "xls", "xlsx"], 
+                    key="orphan_file"
                 )
                 if orphan_file:
-                    orphan_pages_df = pd.read_csv(orphan_file)
+                    if orphan_file.name.endswith(".csv"):
+                        orphan_pages_df = pd.read_csv(orphan_file)
+                    else:
+                        orphan_pages_df = pd.read_excel(orphan_file)
                     st.success(
                         f"✅ Orphan pages file uploaded with {len(orphan_pages_df)} rows"
                     )
@@ -152,10 +284,29 @@ def main():
         if st.button("🚀 Generate Web Audit Report", type="primary", use_container_width=True):
             
             if df is not None and len(df) > 0:
+                # Apply filtering to main dataset
+                if 'Address' in df.columns:
+                    filtered_df, filter_stats = filter_pages(
+                        df, 
+                        include_query_params=False,
+                        custom_exclusions=None
+                    )
+                    
+                    # Display filtering summary
+                    display_filter_summary(filter_stats)
+                    st.markdown("---")
+                    
+                    # Use filtered data for analysis
+                    df_for_analysis = filtered_df
+                else:
+                    st.warning("'Address' column not found in main data. Proceeding without filtering.")
+                    df_for_analysis = df
+                    filter_stats = {'final_count': len(df)}
+                
                 domain = (
-                    df["Address"].iloc[0].split("/")[2]
-                    if "://" in df["Address"].iloc[0]
-                    else df["Address"].iloc[0]
+                    df_for_analysis["Address"].iloc[0].split("/")[2]
+                    if "://" in df_for_analysis["Address"].iloc[0]
+                    else df_for_analysis["Address"].iloc[0]
                 )
                 website_url = f"https://{domain}" if not domain.startswith('http') else domain
                 
@@ -187,8 +338,16 @@ def main():
                 status_text.text("📊 Generating SEO analysis...")
                 progress_bar.progress(60)
                 
+                # Check for robots.txt existence
+                robots_url = website_url.rstrip('/') + '/robots.txt'
+                try:
+                    robots_response = requests.get(robots_url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
+                    robots_success = robots_response.status_code == 200
+                except Exception:
+                    robots_success = False
+                # Use filtered data for SEO analysis
                 report_df, detailed_data = analyze_screaming_frog_data(
-                    df, alt_tag_df, orphan_pages_df
+                    df_for_analysis, alt_tag_df, orphan_pages_df, sitemap_success=sitemap_success, robots_success=robots_success
                 )
                 
                 progress_bar.progress(80)
@@ -200,7 +359,7 @@ def main():
                 progress_bar.empty()
                 status_text.empty()
                 
-                st.success(f"🌐 Complete audit report for: **{domain}**")
+                st.success(f"🌐 Complete audit report for: **{domain}** (Analyzed {filter_stats['final_count']:,} pages)")
                 
                 st.header("📊 Website Overview")
                 
@@ -248,7 +407,7 @@ def main():
                     
                 else:
                     st.warning("⚠️ Sitemap analysis failed or no URLs found in sitemap")
-                    display_summary_cards(domain, len(df), Counter(), Counter())
+                    display_summary_cards(domain, len(df_for_analysis), Counter(), Counter())
                 
                 st.markdown("---")
                 
@@ -345,11 +504,19 @@ def main():
 
                 with download_col3:
                     summary_data = {
-                        'Metric': ['Domain', 'Total Pages (Sitemap)', 'Total Pages (Crawled)', 'Languages Detected', 'Categories Detected'],
+                        'Metric': [
+                            'Domain', 
+                            'Total Pages (Sitemap)', 
+                            'Total Pages (Crawled - Original)', 
+                            'Total Pages (Crawled - Filtered)',
+                            'Languages Detected', 
+                            'Categories Detected'
+                        ],
                         'Value': [
                             domain,
                             len(sitemap_urls) if sitemap_success else 'N/A',
                             len(df),
+                            filter_stats['final_count'],
                             len(language_counts) if language_counts else 'N/A',
                             len(category_counts) if category_counts else 'N/A'
                         ]
@@ -391,4 +558,4 @@ def main():
         st.error("Please make sure your files are in the correct format and try again.")
         
 if __name__ == "__main__":
-    main()
+    main()  

@@ -15,15 +15,12 @@ import requests
 import re
 import logging
 from urllib3.exceptions import InsecureRequestWarning
-
 from modules.helper_function import*
 
 # Disable SSL warnings
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
 
 SCHEMA_CHECKLIST = [
     ("Breadcrumbs", "BreadcrumbList"),
@@ -81,6 +78,7 @@ URL_VARIATIONS = [
     "/login",
     "/signup",
     "/register",
+    "/resources/cyberglossary",
 ]
 
 def is_valid_page_url(url):
@@ -229,7 +227,7 @@ def update_schema_markup_analysis(df, report, expected_outcomes, sources):
     report["Source"].append(sources["Schema Markup"])
     report["Status"].append(status)
     
-def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
+def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None, sitemap_success=None, robots_success=None):
     expected_outcomes = {
         "Website performance on desktop": "Score > 90",
         "Website performance on mobile": "Score > 80",
@@ -273,7 +271,7 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
         "Non indexed pages": "Google search console",
         "Robots.txt file optimization": "Manual",
         "Sitemap file optimization": "Manual",
-        "Broken internal links (404)": "Ahrefs",
+        "Broken internal links (404)": "Screaming frog",
         "Broken external links": "Ahrefs",
         "Broken backlinks": "Ahrefs",
         "Broken Images": "Manual",
@@ -354,17 +352,17 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None):
 
     report["Category"].append("Crawling & Indexing")
     report["Parameters"].append("Robots.txt file optimization")
-    report["Current Value"].append("N/A")
+    report["Current Value"].append("Available" if robots_success else "N/A")
     report["Expected Value"].append(expected_outcomes["Robots.txt file optimization"])
     report["Source"].append(sources["Robots.txt file optimization"])
-    report["Status"].append("ℹ️ Not Available")
+    report["Status"].append("✅ Pass" if robots_success else "ℹ️ Not Available")
 
     report["Category"].append("Crawling & Indexing")
     report["Parameters"].append("Sitemap file optimization")
-    report["Current Value"].append("N/A")
+    report["Current Value"].append("Available" if sitemap_success else "N/A")
     report["Expected Value"].append(expected_outcomes["Sitemap file optimization"])
     report["Source"].append(sources["Sitemap file optimization"])
-    report["Status"].append("ℹ️ Not Available")
+    report["Status"].append("✅ Pass" if sitemap_success else "ℹ️ Not Available")
 
     # Site Health & Structure
     broken_internal_links = len(df[df["Status Code"] == 404])
