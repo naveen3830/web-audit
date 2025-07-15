@@ -9,4 +9,7 @@ sf_after_crawl.png
 app1.py
 header.py
 .ruff_cache/
+streamlit_schema.py
+test.ipynb
+
 

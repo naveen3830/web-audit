@@ -437,7 +437,9 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None, sitem
 
     duplicate_content = 0
     if "Word Count" in df.columns and "Sentence Count" in df.columns:
-        df_content = df[df["Word Count"].notna() & df["Sentence Count"].notna()]
+        df_content = df[
+            df["Word Count"].notna() & df["Sentence Count"].notna() & ~((df["Word Count"] == 0) & (df["Sentence Count"] == 0))
+        ]   
         duplicate_content = len(
             df_content[
                 df_content.duplicated(
@@ -521,7 +523,10 @@ def analyze_screaming_frog_data(df, alt_tag_df=None, orphan_pages_df=None, sitem
         and "Sentence Count" in df.columns
     ):
         duplicate_content_data = df[
-            df.duplicated(subset=["Word Count", "Sentence Count"], keep=False)
+            df["Word Count"].notna() & df["Sentence Count"].notna() & ~((df["Word Count"] == 0) & (df["Sentence Count"] == 0))
+        ]
+        duplicate_content_data = duplicate_content_data[
+            duplicate_content_data.duplicated(subset=["Word Count", "Sentence Count"], keep=False)
         ][["Address", "Word Count", "Sentence Count"]]
 
     h1_issues_data = None
